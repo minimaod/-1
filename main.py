@@ -1,11 +1,13 @@
 import sys
 import os
+import json
 
 print("[Debug 1] 正在启动 main.py...")
 
 try:
     from agent.core import AgentEngine
-    print("[Debug 2] 成功导入 AgentEngine 模块！")
+    from agent.tools import AVAILABLE_TOOLS
+    print("[Debug 2] 成功导入 AgentEngine 与工具模块！")
 except Exception as e:
     print(f"[Error 导包失败] {e}")
     sys.exit(1)
@@ -33,16 +35,46 @@ def main():
                 print("引擎已关闭。")
                 break
 
-            print("Agent > [正在等待网络首包响应...]", end="", flush=True)
+            print("Agent > ", end="", flush=True)
 
-            # 消费流式生成器
-            first_token = True
-            for chunk in engine.chat_stream(user_input):
-                if first_token:
-                    # 首包到达，把等待提示擦除或继续输出
-                    first_token = False
-                print(chunk, end="", flush=True)
-            
+            # 消费首轮流式
+            need_tool_execution = False
+            pending_tool_calls = []
+
+            for event_type, data in engine.chat_stream(user_input):
+                if event_type == "text":
+                    print(data, end="", flush=True)
+                elif event_type == "tool_calls":
+                    need_tool_execution = True
+                    pending_tool_calls = data
+
+            # 如果触发了工具调用，开启阶段二：本地执行并回传
+            if need_tool_execution:
+                for tool_call in pending_tool_calls:
+                    call_id = tool_call["id"]
+                    func_name = tool_call["function"]["name"]
+                    raw_args = tool_call["function"]["arguments"]
+
+                    print(f"\n[系统调度] 检测到工具调用请求: {func_name}")
+                    print(f"[系统调度] 参数解析: {raw_args}")
+
+                    # 1. 动态查找并安全执行本地函数
+                    if func_name in AVAILABLE_TOOLS:
+                        func = AVAILABLE_TOOLS[func_name]
+                        # 容错反序列化参数字典
+                        args_dict = json.loads(raw_args) if raw_args else {}
+                        
+                        # 真正执行本地 Python 代码
+                        tool_result = func(**args_dict)
+                        print(f"[本地探针执行结果] -> {tool_result}")
+
+                        # 2. 将结果交差回传，驱动二次流式输出
+                        print("Agent > ", end="", flush=True)
+                        for chunk in engine.send_tool_result_stream(call_id, func_name, tool_result):
+                            print(chunk, end="", flush=True)
+                    else:
+                        print(f"[Error] 未注册的本地工具: {func_name}")
+
             print()
 
         except KeyboardInterrupt:
