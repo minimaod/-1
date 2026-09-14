@@ -3,8 +3,8 @@ import json
 from typing import Optional
 from openai import OpenAI
 from dotenv import load_dotenv
+from typing import List, Dict, Any
 
-# 引入我们在 Task 1 中写好的工具协议契约
 from agent.tools import TOOLS_SCHEMA
 
 load_dotenv()
@@ -138,3 +138,125 @@ class AgentEngine:
 
         if full_response:
             self.history.append({"role": "assistant", "content": full_response})
+   
+
+    def run_turn(self, messages: List[Dict[str, Any]]) -> str:
+        """
+        执行一轮完整对话交互（支持流式拼接、多工具调用与 HITL 拦截）
+        """
+        # 1. 触发第一阶段流式调用
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=TOOLS_SCHEMA,
+            stream=True
+        )
+
+        full_content = ""
+        tool_calls_dict = {}
+
+        print("🤖 Agent: ", end="", flush=True)
+
+        for chunk in response:
+            delta = chunk.choices[0].delta
+
+            # 拼接文本输出
+            if delta.content:
+                full_content += delta.content
+                print(delta.content, end="", flush=True)
+
+            # 流式累积 tool_calls 碎片
+            if delta.tool_calls:
+                for tc_chunk in delta.tool_calls:
+                    idx = tc_chunk.index
+                    if idx not in tool_calls_dict:
+                        tool_calls_dict[idx] = {
+                            "id": tc_chunk.id or "",
+                            "type": "function",
+                            "function": {
+                                "name": tc_chunk.function.name or "",
+                                "arguments": tc_chunk.function.arguments or ""
+                            }
+                        }
+                    else:
+                        if tc_chunk.id:
+                            tool_calls_dict[idx]["id"] += tc_chunk.id
+                        if tc_chunk.function.name:
+                            tool_calls_dict[idx]["function"]["name"] += tc_chunk.function.name
+                        if tc_chunk.function.arguments:
+                            tool_calls_dict[idx]["function"]["arguments"] += tc_chunk.function.arguments
+
+        print()  # 换行
+
+        # 2. 如果没有工具调用，纯文本直接结束
+        if not tool_calls_dict:
+            messages.append({"role": "assistant", "content": full_content})
+            return full_content
+
+        # 3. 构造第一阶段的标准 Assistant 回传报文
+        assembled_tool_calls = list(tool_calls_dict.values())
+        messages.append({
+            "role": "assistant",
+            "content": full_content if full_content else None,
+            "tool_calls": assembled_tool_calls
+        })
+
+        # 4. 遍历并执行所有工具调用（挂载 HITL）
+        for tool_call in assembled_tool_calls:
+            tool_id = tool_call["id"]
+            tool_name = tool_call["function"]["name"]
+            
+            try:
+                raw_args = tool_call["function"]["arguments"]
+                args = json.loads(raw_args) if raw_args else {}
+            except json.JSONDecodeError:
+                args = {}
+
+            # --- [HITL 拦截判断点] ---
+            if tool_name in SENSITIVE_TOOLS:
+                approved = self._request_human_approval(tool_name, args)
+                if not approved:
+                    tool_output = "Error: 操作被系统操作员 (Human) 拒绝。请向用户说明已终止该操作，或询问下一步指示。"
+                    print(f"🛑 [HITL] 已拒绝调用: {tool_name}")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_id,
+                        "content": tool_output
+                    })
+                    continue  # 跳过实际执行，进入下一个工具处理
+
+            # 正常执行分发
+            executor = TOOL_REGISTRY.get(tool_name)
+            if executor:
+                try:
+                    tool_output = str(executor(**args))
+                except Exception as e:
+                    tool_output = f"Error: 执行异常 - {str(e)}"
+            else:
+                tool_output = f"Error: 工具 '{tool_name}' 未注册。"
+
+            # 组装标准 tool 响应
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "content": tool_output
+            })
+
+        # 5. 第二阶段二次回传给模型，由大模型根据工具执行结果生成最终自然语言答复
+        second_response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            stream=True
+        )
+
+        second_content = ""
+        print("🤖 Agent (二次总结): ", end="", flush=True)
+        for chunk in second_response:
+            delta = chunk.choices[0].delta
+            if delta.content:
+                second_content += delta.content
+                print(delta.content, end="", flush=True)
+        print()
+
+        messages.append({"role": "assistant", "content": second_content})
+        return second_content
