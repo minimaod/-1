@@ -13,9 +13,8 @@ import json
 from typing import AsyncGenerator, Optional
 import uuid
 
-from agent.approval import approval_manager
 from agent.core import AgentEngine
-from agent.session import session_manager
+from agent.session import approval_manager, session_manager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse

@@ -13,7 +13,6 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from openai import AsyncOpenAI
 
 from config import settings
-from agent.approval import approval_manager
 from agent.context import ContextManager
 from agent.events import AgentEvent
 from agent.tools import TOOL_REGISTRY, TOOLS_SCHEMA
@@ -112,6 +111,16 @@ class AgentEngine:
         1. Context Truncation：调用 LLM 前必须进行滑动窗口裁剪，防止超长上下文导致 400 Bad Request。
         2. HITL 挂起保护：高危工具必须下发 approval_required 并无锁让出 CPU，等待外部回调解锁。
         """
+        # 【破环点：approval_manager 为什么只能在函数体内导入，而不能提到模块级】
+        # approval_manager 与 SessionManager 同驻 agent.session，而 agent.session
+        # 在模块级静态导入 AgentEngine（session → core，这是真实的分层依赖）。
+        # 若此处改回模块级导入，依赖图立刻成环 core → session → core；又因模块级
+        # 导入语句位于 AgentEngine 类定义之前，运行期两个入口方向都会抛
+        # ImportError: cannot import name ... from partially initialized module。
+        # 故只能把这条「为取单例而硬造出来的边」延迟化：本生成器首次被推进时，
+        # agent.session 早已初始化完毕，取到的仍是与 server.py 同一个全局单例。
+        from agent.session import approval_manager
+
         self.history.append({"role": "user", "content": user_input})
 
         while True:

@@ -1,6 +1,7 @@
 """
 文件定位: mini_agent/agent/session.py
-功能: 驱动三级缓存（L1 内存 -> L2 磁盘 -> L3 新建）并管理持久化生命周期
+功能: 会话生命周期池 —— 驱动三级缓存（L1 内存 -> L2 磁盘 -> L3 新建）管理持久化生命周期，
+      并维护 approval_id -> asyncio.Future 的内存池以支持 HITL 的异步挂起与唤醒
 """
 import asyncio
 from pathlib import Path
@@ -53,4 +54,47 @@ class SessionManager:
     def get_active_count(self) -> int:
         return len(self._sessions)
 
+
+class ApprovalManager:
+    """
+    人工审批挂起池（HITL）
+
+    【Why 与 SessionManager 同驻本模块】二者同属「会话生命周期」这一个职责范畴：
+    会话池管理消息历史的生老病死，审批池管理单轮对话中被挂起协程的等待与唤醒
+    （core 侧 create_approval 挂起，server 侧 resolve_approval 兑现）。合并后
+    agent.session 即成为会话生命周期的唯一入口。
+
+    【防错点】approval_manager 必须是全局唯一实例。若本类被复制出第二份定义
+    （例如另建兼容模块），core 会在 A 实例的 Future 上永久等待、而 server 往
+    B 实例里填结果 —— HTTP 返回 404、SSE 流挂死、服务端日志全干净，全程零异常。
+    """
+
+    def __init__(self):
+        # 挂起字典：approval_id 映射到正在等待结果的 Future 对象
+        self._pending: Dict[str, asyncio.Future] = {}
+        self._lock = asyncio.Lock()
+
+    async def create_approval(self, approval_id: str) -> asyncio.Future:
+        """创建一个挂起的承诺（Future），等待外部接口履约"""
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        async with self._lock:
+            self._pending[approval_id] = fut
+        return fut
+
+    async def resolve_approval(self, approval_id: str, action: str) -> bool:
+        """
+        兑现承诺：填入用户的决定（approve / reject），
+        唤醒被挂起的生成器协程
+        """
+        async with self._lock:
+            fut = self._pending.pop(approval_id, None)
+            if fut and not fut.done():
+                fut.set_result(action)
+                return True
+            return False
+
+
+# 全局单例
 session_manager = SessionManager()
+approval_manager = ApprovalManager()
