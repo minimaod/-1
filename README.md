@@ -15,7 +15,7 @@ mini_agent 是一个从零手写、不依赖 LangChain / LlamaIndex 等高层黑
 • 路径沙箱：基于 resolve() + is_relative_to 的目录穿越防御与凭证拒绝清单。
 • 人机协同（HITL）：高危工具经 asyncio.Future 挂起，等待外部审批回调唤醒。
 • [x] Milestone 4: 外部长期记忆与上下文窗口裁剪压缩 (Memory & Context Management)
-• Token 预算治理与滑动窗口裁剪（agent/context.py），含 System Pinning 与工具调用成对完整性保护。
+• Token 预算治理与滑动窗口裁剪（agent/context.py）：System Pinning、Tool Pair Atomicity（tool_calls 与回执成对裁剪）两道协议保护（System Pinning 的生效条件见「核心设计考量」第 4 条）。
 • SQLite 会话持久化与三级缓存冷恢复（agent/session.py + agent/storage.py）。
 • SSE 流式服务化与标准化事件契约（server.py + agent/events.py）。
 🏗️ 架构分层与设计模式 (Architecture)
@@ -55,7 +55,7 @@ mini_agent 是一个从零手写、不依赖 LangChain / LlamaIndex 等高层黑
 1. 客户端上下文维护机制：大模型 API 本质是无状态（Stateless）的 HTTP 协议，系统在 AgentEngine 内部维护 self.history 列表，每轮交互完成自动回写，保证多会话互相隔离且零全局变量污染。
 2. 生成器解耦机制：run_turn 以异步生成器 yield 出标准化的 AgentEvent，core.py 仅关注数据生产与调度；Web 适配层（server.py）只负责把事件翻译成 SSE 文本帧。核心引擎不认识 FastAPI、也不理解 SSE 协议，因此替换或新增展示层无需改动内核一行代码。
 3. 事件契约统一：跨层传递的不是裸字符串或元组，而是 agent/events.py 定义的 AgentEvent（Pydantic 模型）。协议形状由类型固化，SSE 帧格式与前端约定不会随内核实现漂移。
-4. 上下文与协议双保护：滑动窗口裁剪必须同时守住 System Pinning（系统提示词永不被挤出）与 Tool Pair Atomicity（tool_calls 与 tool 回执成对保留或成对丢弃），否则长对话下会在 LLM 侧偶发 400 Bad Request。
+4. 上下文与协议双保护：滑动窗口裁剪必须同时守住 System Pinning（系统提示词永不被挤出）与 Tool Pair Atomicity（tool_calls 与 tool 回执成对保留或成对丢弃），否则长对话下会在 LLM 侧偶发 400 Bad Request。其中 Tool Pair Atomicity 无条件生效；System Pinning 的触发前提是历史首位确实是 system 消息，而 AgentEngine 只在显式传入 system_prompt 时才插入（agent/core.py:42）。当前 agent/session.py 的两个构造点都未传该参数，因此默认链路上历史里不存在 system 消息，这道保护不会被触发 —— 它属于已实现、且被 test_context.py 覆盖，但生产路径尚未接入的能力。若要启用，需在 session.py 的构造点显式传入 system_prompt。
 📂 项目结构 (Project Tree)
 mini_agent/
 ├── config.py                # 配置中心（12-Factor 单例，Fail-Fast 启动校验）
