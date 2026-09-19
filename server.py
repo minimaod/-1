@@ -10,13 +10,11 @@ from config import settings
 
 settings.validate()  # Fail-Fast：缺失关键凭证立即阻断启动
 import json
-import traceback
 from typing import AsyncGenerator, Optional
 import uuid
 
 from agent.approval import approval_manager
 from agent.core import AgentEngine
-from agent.schema import AgentEvent
 from agent.session import session_manager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware

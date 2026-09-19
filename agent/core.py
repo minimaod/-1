@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 from config import settings
 from agent.approval import approval_manager
 from agent.context import ContextManager
-from agent.schema import AgentEvent
+from agent.events import AgentEvent
 from agent.tools import TOOL_REGISTRY, TOOLS_SCHEMA
 
 

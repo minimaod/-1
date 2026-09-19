@@ -1,8 +1,8 @@
 """
-文件定位: mini_agent/agent/schema.py
+文件定位: mini_agent/agent/events.py
 功能: 定义全链路统一的 AgentEvent 数据协议
 """
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel, Field
 
 
