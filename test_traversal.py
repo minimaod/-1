@@ -24,11 +24,12 @@ git rm --cached 收拾的来源。沙箱是写入文件系统的最后一道边�
 另有一组 MUST_BLOCK 向量额外硬断言「必须返回 Error」——那是我们明确承诺的
 安全底线，值得为此承担一点过拟合风险。
 
-【已知边界（不在本文件断言，另附说明）】
-read_file 的边界基准是 PROJECT_ROOT（整个项目），而 .env 位于项目根，
-因此 LLM 可以调用 read_file('.env') 取到明文密钥，且 read_file 不在
-SENSITIVE_TOOLS 中、不经 HITL 审批。这是当前设计的暴露面，不是本测试要
-固化的行为，故不加断言。
+【已闭合的暴露面：凭证不可读】
+read_file 的判界基准是 PROJECT_ROOT（整个项目），而 .env 就在项目根、data/ 里
+是完整会话历史、.git/ 可能含远端凭证 —— 越界检查天然拦不住根内的这些路径，
+模型可调用 read_file('.env') 取到明文密钥且无需 HITL 审批。该暴露面已由
+agent/tools.py 的 _is_denied_secret 拒绝清单闭合（见下方凭证用例），
+"越界检查管不了边界内的秘密"这一点由用例长期守住。
 """
 
 import os
@@ -360,6 +361,68 @@ def test_read_file_error_modes() -> None:
     )
 
 
+def test_credential_paths_are_not_readable() -> None:
+    """
+    凭证与运行态数据必须不可读 —— 「边界内的秘密」这条暴露面的回归防线。
+
+    【Why 单独一条】沙箱约束的是"能写到哪"，read_file 却放宽到整个项目根，
+    而 .env / data/ / .git/ 本来就在根内。若不显式拒绝，越界检查在这类路径上
+    形同虚设：模型读一次 .env 就能拿到明文 API Key，且全程无需人工审批。
+    此处同时断言拒绝文案不含任何内容 —— 拒绝时也不能把内容漏出去。
+    """
+    for path in (".env", ".env.local", ".env.production", ".git/config", "data/local_agent.db"):
+        result = read_file(path)
+        # 【注意】断言失败信息里刻意不回显 result —— 那正是本用例要保护的凭证，
+        # 一旦回显，失败日志（尤其 CI 日志）本身就成了泄露渠道。
+        assert result.startswith("Error:"), (
+            f"敏感路径 {path!r} 竟可读取（返回内容已隐去，避免失败信息本身泄露凭证）"
+        )
+        assert "安全违规" in result, (
+            f"路径 {path!r} 被拒，但原因不是凭证拦截（返回内容已隐去）"
+        )
+        assert "DEEPSEEK" not in result and "sk-" not in result, (
+            f"拒绝读取 {path!r} 时仍泄露了内容"
+        )
+
+    # 反向保证：正常源码读取不受影响，避免这条闸门误伤主功能
+    assert "统一配置中心" in read_file("config.py"), "拒绝清单误伤了正常源码读取"
+
+
+def test_denylist_matches_whole_components() -> None:
+    """
+    拒绝清单按【路径分量】匹配，不做子串匹配。
+
+    【Why】若把 ".git" / "data" 当成子串去匹配完整路径字符串，那么名为
+    datastore/ 的合法目录、或名为 my.data.txt 的文件都会被误拒 —— 安全闸门
+    一旦误伤正常用法，下一步就会被人整条注释掉。这里锁死精确性。
+    本用例直接调用 _validate_path，不落盘、不依赖文件是否真实存在。
+    """
+    # 这些必须放行（仅名字含 data / .env 前缀之外的形式）
+    for allowed in ("datastore/notes.txt", ".environment", "agent/tools.py", "workspace/x.txt"):
+        landing = _validate_path(allowed, restrict_to_workspace=False)
+        assert landing is not None, f"合法路径被误拒: {allowed}"
+
+    # 这些必须拒绝（含子路径）
+    denylist = (
+        ".env",
+        ".env.local",
+        ".git/config",
+        "data/local_agent.db",
+        "data/nested/anything.json",
+    )
+    for denied in denylist:
+        try:
+            _validate_path(denied, restrict_to_workspace=False)
+        except PermissionError:
+            continue
+        raise AssertionError(f"敏感路径未被拒绝: {denied}")
+
+    # 沙箱模式的写入不受该清单影响：沙箱内的 .env 只是诱饵，不涉凭证
+    assert _validate_path(".env", restrict_to_workspace=True), (
+        "沙箱内写入不应受凭证清单限制"
+    )
+
+
 def test_registry_schema_contract() -> None:
     """
     工具契约一致性：TOOL_REGISTRY（调度表）与 TOOLS_SCHEMA（下发给模型的声明）
@@ -379,6 +442,13 @@ def test_registry_schema_contract() -> None:
     assert "write_file" in settings.SENSITIVE_TOOLS, (
         "写盘工具必须受 HITL 管控，否则高危操作可无审批执行"
     )
+    # 审批清单不得出现注册表中不存在的名字：那是永远调不到的工具配了审批规则，
+    # 属静默死配置，会掩盖"以为某工具已受管控"的错觉。
+    phantom = settings.SENSITIVE_TOOLS - registry_names
+    assert not phantom, (
+        f"SENSITIVE_TOOLS 含注册表中不存在的工具 {sorted(phantom)}，属死配置。"
+        "请在实现该工具时再把它加入审批清单。"
+    )
 
 
 # ==================== 运行器 ====================
@@ -397,6 +467,8 @@ def main() -> int:
         ("对抗输入端到端不落盘到沙箱外", test_adversarial_inputs_do_not_leak_files),
         ("read_file 边界与越界拒绝", test_read_file_scoped_to_project_root),
         ("read_file 错误分支明确", test_read_file_error_modes),
+        ("凭证与运行态数据不可读", test_credential_paths_are_not_readable),
+        ("拒绝清单按路径分量精确匹配", test_denylist_matches_whole_components),
         ("工具注册表与 Schema 契约一致", test_registry_schema_contract),
     ]
 

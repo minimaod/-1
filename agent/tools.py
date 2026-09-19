@@ -1,13 +1,35 @@
 import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Set
 
-# ==================== 1. 基础路径与沙箱设定 ====================
 from config import settings
 
 # ==================== 1. 基础路径与沙箱设定 ====================
 PROJECT_ROOT: Path = settings.BASE_DIR
 WORKSPACE_DIR: Path = settings.WORKSPACE_DIR
+
+# 凭证与运行态数据的拒绝清单。
+# 【Why 光有"不得越出项目根"不够】read_file 的判界基准是【整个项目根】
+# (restrict_to_workspace=False)，而 .env 就在根目录下、data/ 里是完整会话历史、
+# .git/ 可能含远端凭证 —— 它们本来就在边界之内，越界检查天然拦不住。
+# 若不显式拒绝，模型只要调用 read_file('.env') 就能把明文 API Key 读进对话，
+# 随后经 SSE 下发、并被 session_manager 落盘；而 read_file 并不在
+# SENSITIVE_TOOLS 中，全程无需人工审批。
+# 【匹配规则】按【路径分量】精确匹配，不做子串匹配 —— 否则 datastore/ 这类
+# 仅名字含 "data" 的合法目录会被误伤。
+DENIED_DIR_NAMES: Set[str] = {".git", "data"}
+
+
+def _is_denied_secret(resolved_path: Path) -> bool:
+    """判断项目内某路径是否命中凭证 / 运行态数据拒绝清单。"""
+    try:
+        rel = resolved_path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return False  # 不在项目根之内，交由边界判断处理
+    if rel.name == ".env" or rel.name.startswith(".env."):
+        return True  # 覆盖 .env / .env.local / .env.production 等变体
+    return any(part in DENIED_DIR_NAMES for part in rel.parts)
+
 
 def _validate_path(filepath: str, restrict_to_workspace: bool = True) -> Path:
     """路径安全校验：利用 resolve() 防御 Path Traversal 穿越攻击"""
@@ -24,6 +46,14 @@ def _validate_path(filepath: str, restrict_to_workspace: bool = True) -> Path:
         raise PermissionError(
             f"安全违规：路径 '{filepath}' 超出安全边界 [{base_dir}]！"
         )
+
+    # 【第二道闸门】只作用于"放宽到全项目读取"这一模式：沙箱内写入不受影响
+    # （沙箱里出现名为 .env 的文件只是诱饵，不构成凭证泄露）。
+    if not restrict_to_workspace and _is_denied_secret(resolved_path):
+        raise PermissionError(
+            f"安全违规：路径 '{filepath}' 属于凭证或运行态数据，禁止读取！"
+        )
+
     return resolved_path
 
 
