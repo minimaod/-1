@@ -9,8 +9,16 @@ __pycache__/
 *.pyc
 
 # 沙箱运行时产物（workspace 是 Agent 的写入目标，内容随对话变化，不应入库）
-workspace/*.txt
+# 【Why 整目录忽略，而不是按后缀枚举】原先写的是 workspace/*.txt，只拦得住
+# 直接位于顶层、且扩展名恰好是 .txt 的文件；Agent 往沙箱里建一层子目录
+# （workspace/sub/a.txt）或写别的扩展名（workspace/notes.md）就会漏进 git status，
+# 而这恰恰是本沙箱最典型的用法。该目录由 config.py 在 import 时 mkdir 创建，
+# 仓库内不含任何需版本管理的文件，故直接忽略整个目录。
+workspace/
 
 # 本地会话持久化数据库（运行时生成、二进制、随每轮对话变动，不应入库）
 data/*.db
 data/*.db-journal
+
+# 编辑器本地工作区状态（会话记录、计划文件与个人设置，属本机产物，不应入库）
+.claude/
