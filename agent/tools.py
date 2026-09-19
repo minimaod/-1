@@ -3,10 +3,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict
 
 # ==================== 1. 基础路径与沙箱设定 ====================
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-WORKSPACE_DIR = (PROJECT_ROOT / "workspace").resolve()
-WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+from config import settings
 
+# ==================== 1. 基础路径与沙箱设定 ====================
+PROJECT_ROOT: Path = settings.BASE_DIR
+WORKSPACE_DIR: Path = settings.WORKSPACE_DIR
 
 def _validate_path(filepath: str, restrict_to_workspace: bool = True) -> Path:
     """路径安全校验：利用 resolve() 防御 Path Traversal 穿越攻击"""

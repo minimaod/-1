@@ -3,13 +3,14 @@ from pathlib import Path
 import sqlite3
 from typing import Optional
 from datetime import datetime
-
+from config import settings
 class SessionStorage:
 
-  def __init__(self, db_path: str = "data/local_agent.db"):
-    self.db_path = Path(db_path)
-    self.db_path.parent.mkdir(parents=True, exist_ok=True)
-    self._init_db()
+  def __init__(self, db_path: Optional[str | Path] = None) -> None:
+        # 优先使用入参，缺省时对齐配置中心
+        self.db_path = Path(db_path) if db_path else settings.DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
 
   def _get_connection(self) -> sqlite3.Connection:
     """获取 SQLite 连接。"""

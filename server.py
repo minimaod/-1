@@ -5,6 +5,10 @@
 from dotenv import load_dotenv
 
 load_dotenv()  # 必须在所有业务 import 之前执行
+
+from config import settings
+
+settings.validate()  # Fail-Fast：缺失关键凭证立即阻断启动
 import json
 import traceback
 from typing import AsyncGenerator, Optional
@@ -136,4 +140,9 @@ async def approval_action_endpoint(req: ApprovalActionRequest):
 if __name__ == "__main__":
   import uvicorn
 
-  uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
+  uvicorn.run(
+      "server:app",
+      host=settings.SERVER_HOST,
+      port=settings.SERVER_PORT,
+      reload=True,
+  )

@@ -3,17 +3,18 @@
 功能: 驱动三级缓存（L1 内存 -> L2 磁盘 -> L3 新建）并管理持久化生命周期
 """
 import asyncio
-from typing import Dict
+from pathlib import Path
+from typing import Dict, Optional
 from agent.core import AgentEngine
 from agent.storage import SessionStorage
-
+from config import settings
 class SessionManager:
     """带 SQLite 持久化支持的会话池管理器"""
 
-    def __init__(self, db_path: str = "data/local_agent.db"):
+    def __init__(self, db_path: Optional[str | Path] = None):
         self._sessions: Dict[str, AgentEngine] = {}
         self._lock = asyncio.Lock()
-        self.storage = SessionStorage(db_path=db_path)
+        self.storage = SessionStorage(db_path=db_path or settings.DB_PATH)
 
     async def get_or_create(self, session_id: str) -> AgentEngine:
         """三级缓存状态机"""
