@@ -21,14 +21,16 @@ class ContextManager:
         self.max_tokens = max_tokens
 
     @staticmethod
-    def estimate_tokens(messages: List[Dict[str, Any]]) -> int:
+    def _estimate_chars(messages: List[Dict[str, Any]]) -> int:
         """
-        【粗粒度 Token 快速估算法】
+        【唯一度量口径】估算消息队列的原始字符总量。
 
-        【Why 为什么不直接用 tiktoken？】
-        1. 避免对非官方 tokenizer 库的重依赖与 C 扩展在不同操作系统下的构建坑。
-        2. 中英文混排场景下，中文约 1.5~2 字符/token，英文约 3~4 字符/token。
-           经验公式：字符串总长度 / 2 可以在极低开销下（O(N) 字符串遍历）提供偏保守的安全边界。
+        【Why 必须单独抽出这一层（底层踩坑防错点）】
+        Token 估算最终要把字符总量做一次 // 2 取整。若各处分别对「单条」取整后
+        再累加，即 Σ floor(xᵢ/2)，其结果**恒小于等于**对「总量」取整的
+        floor(Σxᵢ/2)，且窗口越长低估越多（200 条短消息可低估至实际值的 0%）。
+        裁剪循环与预算校验若各用一个口径，max_tokens 这个契约就形同虚设。
+        故所有累计都必须在「字符」维度进行，只在最终比较时取整一次。
         """
         total_chars = 0
         for msg in messages:
@@ -38,7 +40,19 @@ class ContextManager:
             if "tool_calls" in msg and msg["tool_calls"]:
                 total_chars += len(json.dumps(msg["tool_calls"], ensure_ascii=False))
 
-        return total_chars // 2
+        return total_chars
+
+    @staticmethod
+    def estimate_tokens(messages: List[Dict[str, Any]]) -> int:
+        """
+        【粗粒度 Token 快速估算法】
+
+        【Why 为什么不直接用 tiktoken？】
+        1. 避免对非官方 tokenizer 库的重依赖与 C 扩展在不同操作系统下的构建坑。
+        2. 中英文混排场景下，中文约 1.5~2 字符/token，英文约 3~4 字符/token。
+           经验公式：字符串总长度 / 2 可以在极低开销下（O(N) 字符串遍历）提供偏保守的安全边界。
+        """
+        return ContextManager._estimate_chars(messages) // 2
 
     def truncate_history(
         self, messages: List[Dict[str, Any]]
@@ -64,14 +78,17 @@ class ContextManager:
             return list(messages)
 
         retained: List[Dict[str, Any]] = []
-        current_tokens = self.estimate_tokens([system_msg]) if system_msg else 0
+        # 以【字符总量】为累计口径，只在与预算比较的瞬间取整一次。
+        # (current_chars + msg_chars) // 2 与 estimate_tokens(system + retained + msg)
+        # 完全等价，从而保证裁剪结果严格不超 max_tokens。
+        current_chars = self._estimate_chars([system_msg]) if system_msg else 0
 
         for msg in reversed(chat_history):
-            msg_tokens = self.estimate_tokens([msg])
-            if current_tokens + msg_tokens > self.max_tokens:
+            msg_chars = self._estimate_chars([msg])
+            if (current_chars + msg_chars) // 2 > self.max_tokens:
                 break
             retained.insert(0, msg)
-            current_tokens += msg_tokens
+            current_chars += msg_chars
 
         # 核心防错：若首条消息是孤立的 tool 响应，剔除它以保证协议完整
         while retained and retained[0].get("role") == "tool":
