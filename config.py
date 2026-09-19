@@ -47,8 +47,11 @@ class Settings:
         self.REQUEST_TIMEOUT: float = float(os.getenv("REQUEST_TIMEOUT", "60.0"))
 
         # ==================== 人机协同（HITL）高危拦截规则 ====================
-        # 命中此集合的工具，必须向前端下发 approval_required 挂起等待人工确认
-        self.SENSITIVE_TOOLS: Set[str] = {"write_file", "create_file"}
+        # 命中此集合的工具，必须向前端下发 approval_required 挂起等待人工确认。
+        # 【Why 这里的名字必须都能在 TOOL_REGISTRY 中找到】集合里出现注册表中
+        # 不存在的名字，等于给一个永远调不到的工具配了审批规则 —— 属静默死配置，
+        # 会让人误以为某工具已受管控。该约束由 test_traversal.py 守住。
+        self.SENSITIVE_TOOLS: Set[str] = {"write_file"}
 
         # ==================== 服务端配置 ====================
         self.SERVER_HOST: str = os.getenv("SERVER_HOST", "127.0.0.1")
