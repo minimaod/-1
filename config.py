@@ -40,6 +40,23 @@ class Settings:
         self.DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
         self.DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "deepseek-chat")
 
+        # ==================== Agent 角色认知（System Prompt） ====================
+        # 【Why 是字面量而不是 os.getenv 的默认值】其余字段读环境变量，是因为它们
+        # 属于「部署环境差异」（密钥、端口、预算）；而角色提示词是产品定义的行为
+        # 契约 —— 它必须随代码一起被 review、被 diff，不允许线上环境悄悄换掉一套
+        # 行为准则。故此处固化在配置中心，作为唯一事实来源。
+        #
+        # 【接入点】agent/session.py 在新建会话时显式传入，钉在 history[0]；
+        # ContextManager 的 System Pinning 由此从「已实现」变为「默认生效」。
+        self.DEFAULT_SYSTEM_PROMPT: str = (
+            "你是一个专业的本地代码审查与 Dev/Ops 研发助手。\n"
+            "你的职责是协助开发者审查变更、定位缺陷并保障系统质量。\n"
+            "行为准则：\n"
+            "1. 在分析代码改动前，优先调用 `get_git_status` 与 `get_git_diff` 获取真实改动，严禁凭空臆测与编造 Diff。\n"
+            "2. 针对审查结果，必须按【变更概览】、【潜在风险/缺陷】、【改进建议】三段式结构输出清晰的 Markdown 报告。\n"
+            "3. 保持防御性工程思维，重点关注越界访问、未捕获异常、资源泄露与并发竞态问题。"
+        )
+
         # ==================== 上下文与工程安全限制 ====================
         # 滑动窗口最大 Token 预算（超出时将触发上下文裁剪）
         self.MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", "8000"))
