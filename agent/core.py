@@ -7,6 +7,7 @@
   2. 纯异步流式：全链路基于 AsyncGenerator，保障 SSE 首字超低延迟（TTFT）。
 """
 
+import inspect
 import json
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
@@ -195,9 +196,30 @@ class AgentEngine:
                 executor = TOOL_REGISTRY.get(tool_name)
                 if executor:
                     try:
-                        tool_output = str(executor(**args))
+                        # 【同步/异步双模分发】注册表里同时存在两种形态的工具：
+                        # read_file 等是同步函数，get_git_status/get_git_diff 是
+                        # async 函数（内部经 asyncio.to_thread 卸载阻塞子进程）。
+                        # 若一律同步调用，async 工具不会报错，而是返回一个协程对象，
+                        # 经 str() 变成 "<coroutine object get_git_status at 0x...>"
+                        # 回写进 history —— 模型收到一串内存地址，同时抛
+                        # "coroutine was never awaited"。全程零异常、零日志，属最
+                        # 隐蔽的一类静默失效。
+                        #
+                        # 【Why 判 awaitable 结果，而不是 inspect.iscoroutinefunction(executor)】
+                        # 后者只认「本身是 async def」这一个形状，对下列同类情况全部误判为
+                        # 同步：functools.partial 包装、带 async __call__ 的可调用对象、
+                        # 以及用同步 wrapper 返回协程的装饰器（例如将来给工具加调用日志）。
+                        # 那些场景下协程又会被 str() 成内存地址，等于把同一个坑换个入口重演。
+                        # 先调用、再看返回值是否 awaitable，对可调用对象的形状无假设，
+                        # 天然覆盖 async def 与上述全部变体。
+                        result = executor(**args)
+                        if inspect.isawaitable(result):
+                            # await 在此让出事件循环：HITL 挂起期间事件循环仍能服务
+                            # 其他会话；子进程的阻塞面已被 to_thread 挪进线程池。
+                            result = await result
+                        tool_output = str(result)
                     except Exception as e:
-                        tool_output = f"Error: 执行异常 - {str(e)}"
+                        tool_output = f"Error: 执行工具 '{tool_name}' 失败: {str(e)}"
                 else:
                     tool_output = f"Error: 工具 '{tool_name}' 未注册。"
 
